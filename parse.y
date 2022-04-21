@@ -14,6 +14,7 @@
 	datatype type;
 	regInfo targetReg;
 	idInfo *idList;
+    ctrlExpInfo ctrlExp;
 }
 
 %token PROG PERIOD VAR
@@ -25,9 +26,11 @@
 %token <token> ID ICONST
 
 %type <idList> idlist
-%type <type> type stype
+%type <type> type
+%type <type> stype
 %type <targetReg> exp
 %type <targetReg> lhs
+%type <ctrlExp> ctrlexp
 
 %start program
 
@@ -44,21 +47,31 @@
 			emitComment("Assign STATIC_AREA_ADDRESS to register \"r0\"");
 			emit(NOLABEL, LOADI, STATIC_AREA_ADDRESS, 0, EMPTY);
 		}
-		PROG ID ';' block PERIOD { }
+		PROG ID ';' block PERIOD {
+
+    }
 		;
 
 	block
-		: variables cmpdstmt { }
+		: variables cmpdstmt {
+
+        }
 		;
 
 	variables
 		: /* empty */
-		| VAR vardcls { }
+		| VAR vardcls {
+
+            }
 		;
 
 	vardcls
-		: vardcls vardcl ';' { }
-		| vardcl ';' { }
+		: vardcls vardcl ';' {
+
+        }
+		| vardcl ';' {
+
+        }
 		| error ';' { yyerror("***Error: illegal variable declaration\n"); }
 		;
 
@@ -119,20 +132,19 @@
 		;
 
 	cmpdstmt
-		: BEG stmtlist END { }
+		: BEG stmtlist END {
+
+        }
 		;
 
 	ifstmt
-		: ifhead
-			THEN
-					stmt
-			ELSE
-					stmt
-		FI
+		: ifhead THEN stmt ELSE stmt FI {
+            // TODO
+        }
 		;
 
 	ifhead
-		: IF condexp {  }
+		: IF condexp { // TODO }
 		;
 
 	writestmt
@@ -150,12 +162,33 @@
 		;
 
 	fstmt
-		: FOR ctrlexp DO stmt { }
+		: {
+            d;
+        }
+        FOR ctrlexp DO stmt {
+            SymTabEntry *symbol = lookup($2.varName);
+            int newLbl1 = NextLabel();
+            int newLbl2 = NextLabel();
+            int newLbl3 = NextLabel();
+            int newReg1 = NextRegister();
+            int newReg2 = NextRegister();
+
+            sprintf(CommentBuffer, "// Generate control code for \"FOR\"");
+            emitComment(CommentBuffer);
+            emit(newLbl1, LOADAI, 0, symbol->offset, newReg1);
+            emit(NOLABEL, CMPLE, newReg1, $2.upperBound.targetRegister, newReg2);
+            emit(NOLABEL, CBR, newReg2, newLbl2, newLbl3);
+            emit(newLbl2, NOP, EMPTY, EMPTY, EMPTY);
+
+            emit(newLbl3, NOP, EMPTY, EMPTY, EMPTY);
+        }
 		ENDFOR
 		;
 
 	wstmt
-		: WHILE condexp DO stmt { }
+		: WHILE condexp DO stmt {
+
+        }
 		ENDWHILE
 		;
 
@@ -217,7 +250,7 @@
 			if (! (($1.type == TYPE_INT) && ($3.type == TYPE_INT))) {
 				printf("*** ERROR ***: Operator types must be integer.\n");
 			}
-			$$.type = $1.type;
+			$$.type = TYPE_INT;
 
 			$$.targetRegister = newReg;
 			emit(NOLABEL,
@@ -226,10 +259,66 @@
 				 $3.targetRegister,
 				 newReg);
 		}
-		| exp '-' exp {  }
-		| exp '*' exp {  }
-		| exp AND exp {  }
-		| exp OR  exp {  }
+		| exp '-' exp {
+			int newReg = NextRegister();
+
+			if (! (($1.type == TYPE_INT) && ($3.type == TYPE_INT))) {
+				printf("*** ERROR ***: Operator types must be integer.\n");
+			}
+			$$.type = TYPE_INT;
+
+			$$.targetRegister = newReg;
+			emit(NOLABEL,
+				 SUB,
+				 $1.targetRegister,
+				 $3.targetRegister,
+				 newReg);
+        }
+		| exp '*' exp {
+			int newReg = NextRegister();
+
+			if (! (($1.type == TYPE_INT) && ($3.type == TYPE_INT))) {
+				printf("*** ERROR ***: Operator types must be integer.\n");
+			}
+			$$.type = TYPE_INT;
+
+			$$.targetRegister = newReg;
+			emit(NOLABEL,
+				 MULT,
+				 $1.targetRegister,
+				 $3.targetRegister,
+				 newReg);
+        }
+		| exp AND exp {
+			int newReg = NextRegister();
+
+			if (! (($1.type == TYPE_BOOL) && ($3.type == TYPE_BOOL))) {
+				printf("*** ERROR ***: Operator types must be integer.\n");
+			}
+			$$.type = TYPE_BOOL;
+
+			$$.targetRegister = newReg;
+			emit(NOLABEL,
+                 AND_INSTR,
+				 $1.targetRegister,
+				 $3.targetRegister,
+				 newReg);
+        }
+		| exp OR exp {
+			int newReg = NextRegister();
+
+			if (! (($1.type == TYPE_BOOL) && ($3.type == TYPE_BOOL))) {
+				printf("*** ERROR ***: Operator types must be integer.\n");
+			}
+			$$.type = TYPE_BOOL;
+
+			$$.targetRegister = newReg;
+			emit(NOLABEL,
+                 OR_INSTR,
+				 $1.targetRegister,
+				 $3.targetRegister,
+				 newReg);
+        }
 
 		| ID {
 			SymTabEntry *symbol = lookup($1.str);
@@ -255,6 +344,7 @@
             $$.type = symbol->type;
 
             sprintf(CommentBuffer, "Load RHS value of array variable \"%s\" with base address %d", symbol->name, symbol->offset);
+            emitComment(CommentBuffer);
             emit(NOLABEL, LOADI, 4, newReg1, EMPTY);
             emit(NOLABEL, MULT, newReg1, $3.targetRegister, newReg2);
             emit(NOLABEL, LOADI, symbol->offset, newReg3, EMPTY);
@@ -285,18 +375,89 @@
 		| error { yyerror("***Error: illegal expression\n"); }
 		;
 
-
 	ctrlexp
-		: ID ASG ICONST ',' ICONST { }
+		: ID ASG ICONST ',' ICONST {
+            SymTabEntry *symbol = lookup($1.str);
+            int newReg1 = NextRegister();
+            int newReg2 = NextRegister();
+            int newReg3 = NextRegister();
+            int newReg4 = NextRegister();
+
+            $$.varName = $1.str;
+            $$.upperBound.targetRegister = newReg4;
+            $$.upperBound.type = TYPE_INT;
+
+            sprintf(CommentBuffer, "Initialize ind. variable \"%s\" at offset %d with lower bound value %d", symbol->name, symbol->offset, $3.num);
+            emitComment(CommentBuffer);
+            emit(NOLABEL, LOADI, symbol->offset, newReg1, EMPTY);
+            emit(NOLABEL, ADD, 0, newReg1, newReg2);
+            emit(NOLABEL, LOADI, $3.num, newReg3, EMPTY);
+            emit(NOLABEL, LOADI, $5.num, newReg4, EMPTY);
+            emit(NOLABEL, STORE, newReg3, newReg2, EMPTY);
+        }
 		;
 
 	condexp
-		: exp NEQ exp { }
-		| exp EQ exp { }
-		| exp LT exp { }
-		| exp LEQ exp { }
-		| exp GT exp { }
-		| exp GEQ exp { }
+		: exp NEQ exp {
+			int newReg = NextRegister();
+			$$.type = TYPE_BOOL;
+			$$.targetRegister = newReg;
+			emit(NOLABEL,
+                 CMPNE,
+				 $1.targetRegister,
+				 $3.targetRegister,
+				 newReg);
+        }
+		| exp EQ exp {
+			int newReg = NextRegister();
+			$$.type = TYPE_BOOL;
+			$$.targetRegister = newReg;
+			emit(NOLABEL,
+                 CMPEQ,
+				 $1.targetRegister,
+				 $3.targetRegister,
+				 newReg);
+        }
+		| exp LT exp {
+			int newReg = NextRegister();
+			$$.type = TYPE_BOOL;
+			$$.targetRegister = newReg;
+			emit(NOLABEL,
+                 CMPLT,
+				 $1.targetRegister,
+				 $3.targetRegister,
+				 newReg);
+        }
+		| exp LEQ exp {
+			int newReg = NextRegister();
+			$$.type = TYPE_BOOL;
+			$$.targetRegister = newReg;
+			emit(NOLABEL,
+                 CMPLE,
+				 $1.targetRegister,
+				 $3.targetRegister,
+				 newReg);
+        }
+		| exp GT exp {
+			int newReg = NextRegister();
+			$$.type = TYPE_BOOL;
+			$$.targetRegister = newReg;
+			emit(NOLABEL,
+                 CMPGT,
+				 $1.targetRegister,
+				 $3.targetRegister,
+				 newReg);
+        }
+		| exp GEQ exp {
+			int newReg = NextRegister();
+			$$.type = TYPE_BOOL;
+			$$.targetRegister = newReg;
+			emit(NOLABEL,
+                 CMPGE,
+				 $1.targetRegister,
+				 $3.targetRegister,
+				 newReg);
+        }
 		| error { yyerror("***Error: illegal conditional expression\n"); }
 		;
 %%

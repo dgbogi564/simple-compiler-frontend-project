@@ -27,6 +27,11 @@ typedef struct {
     int size;
 } datatype;
 
+typedef struct {
+    char *varName;
+    regInfo *upperBound;
+} ctrlExpInfo;
+
 #endif
 
 
