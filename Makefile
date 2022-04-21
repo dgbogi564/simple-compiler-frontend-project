@@ -12,7 +12,7 @@ lex.yy.c: scan.l parse.tab.h attr.h
 	flex -i scan.l
 
 parse.tab.c: parse.y attr.h symtab.h instrutil.h
-	bison -dv parse.y
+	bison -t -dv parse.y
 
 parse.tab.h: parse.tab.c
 

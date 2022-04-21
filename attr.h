@@ -12,9 +12,20 @@ typedef union {int num; char *str;} tokentype;
 typedef enum type_expression {TYPE_INT=0, TYPE_BOOL, TYPE_ERROR} Type_Expression;
 
 typedef struct {
-        Type_Expression type;
-        int targetRegister;
-        } regInfo;
+    Type_Expression type;
+    int targetRegister;
+} regInfo;
+
+typedef struct idInfo idInfo;
+struct idInfo {
+    char *str;
+    idInfo *next;
+};
+
+typedef struct {
+    Type_Expression type;
+    int size;
+} datatype;
 
 #endif
 
