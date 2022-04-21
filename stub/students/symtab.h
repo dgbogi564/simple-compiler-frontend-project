@@ -19,19 +19,20 @@
 #define HASH_TABLE_SIZE 721
 
 typedef struct { /* need to augment this */
-  char *name;
-  int offset;
-  Type_Expression type;  
+    char *name;
+    int offset;
+    int size;
+    Type_Expression type;
 } SymTabEntry;
 
 extern
 void InitSymbolTable();
 
 extern
-SymTabEntry * lookup(char *name);
+SymTabEntry *lookup(char *name);
 
 extern
-void insert(char *name, Type_Expression type, int offset);
+void insert(char *name, Type_Expression type, int offset, int size);
 
 extern
 void PrintSymbolTable();
