@@ -15,6 +15,7 @@
 	regInfo targetReg;
 	idInfo *idList;
     ctrlExpInfo ctrlExp;
+    jmpInfo jmp;
 }
 
 %token PROG PERIOD VAR
@@ -30,7 +31,11 @@
 %type <type> stype
 %type <targetReg> exp
 %type <targetReg> lhs
+%type <targetReg> condexp
+%type <targetReg> ifhead
 %type <ctrlExp> ctrlexp
+%type <jmp> ifstmt
+%type <jmp> wstmt
 
 %start program
 
@@ -47,39 +52,33 @@
 			emitComment("Assign STATIC_AREA_ADDRESS to register \"r0\"");
 			emit(NOLABEL, LOADI, STATIC_AREA_ADDRESS, 0, EMPTY);
 		}
-		PROG ID ';' block PERIOD {
-
-    }
+        PROG ID ';' block PERIOD { }
 		;
 
 	block
-		: variables cmpdstmt {
-
-        }
+		: variables cmpdstmt { }
 		;
 
 	variables
 		: /* empty */
-		| VAR vardcls {
-
-            }
+		| VAR vardcls { }
 		;
 
 	vardcls
-		: vardcls vardcl ';' {
-
-        }
-		| vardcl ';' {
-
-        }
+		: vardcls vardcl ';' { }
+		| vardcl ';' { }
 		| error ';' { yyerror("***Error: illegal variable declaration\n"); }
 		;
 
 	vardcl
 		: idlist ':' type {
 			while ($1 != NULL) {
-				idInfo *temp = $1->next;
-				insert($1->str, $3.type, NextOffset($3.size), $3.size);
+                idInfo *temp = $1->next;
+                SymTabEntry *symbol = lookup($1->str);
+                if (symbol) {
+                    printf("\n***Error: duplicate declaration of %s\n", $1->str);
+                }
+                insert($1->str, $3.type, NextOffset($3.size), $3.size, $3.isArray);
 				free($1);
 				$1 = temp;
 			}
@@ -104,10 +103,12 @@
 		: ARRAY '[' ICONST ']' OF stype {
 			$$ = $6;
 			$$.size = $3.num;
+            $$.isArray = 1;
 		}
 		| stype {
 			$$ = $1;
 			$$.size = 1;
+            $$.isArray = 0;
 		}
 		;
 
@@ -132,19 +133,48 @@
 		;
 
 	cmpdstmt
-		: BEG stmtlist END {
-
-        }
+		: BEG stmtlist END { }
 		;
 
 	ifstmt
-		: ifhead THEN stmt ELSE stmt FI {
-            // TODO
-        }
-		;
+        : ifhead
+            {
+                $<jmp>$ = (jmpInfo) { NextLabel(), NextLabel(), NextLabel() };
+
+                emit(NOLABEL, CBR, $1.targetRegister, $<jmp>$.label[0], $<jmp>$.label[1]);
+            }
+            THEN
+                {
+                    emit($<jmp>2.label[0], NOP, EMPTY, EMPTY, EMPTY);
+                    sprintf(CommentBuffer, "This is the \"true\" branch");
+                    emitComment(CommentBuffer);
+                }
+                stmt
+                {
+                    sprintf(CommentBuffer, "Branch to statement following the \"else\" statement list");
+                    emitComment(CommentBuffer);
+                    emit(NOLABEL, BR, $<jmp>2.label[2], EMPTY, EMPTY);
+                }
+            ELSE
+                {
+                    emit($<jmp>2.label[1], NOP, EMPTY, EMPTY, EMPTY);
+                    sprintf(CommentBuffer, "This is the \"false\" branch");
+                    emitComment(CommentBuffer);
+                }
+                stmt
+        FI
+            {
+                emit($<jmp>2.label[2], NOP, EMPTY, EMPTY, EMPTY);
+            }
+        ;
 
 	ifhead
-		: IF condexp { // TODO }
+		: IF condexp {
+            if ($2.type != TYPE_BOOL) {
+                printf("\n***Error: exp in if stmt must be boolean\n");
+            }
+            $$ = $2;
+        }
 		;
 
 	writestmt
@@ -162,195 +192,238 @@
 		;
 
 	fstmt
-		: {
-            d;
-        }
-        FOR ctrlexp DO stmt {
-            SymTabEntry *symbol = lookup($2.varName);
-            int newLbl1 = NextLabel();
-            int newLbl2 = NextLabel();
-            int newLbl3 = NextLabel();
-            int newReg1 = NextRegister();
-            int newReg2 = NextRegister();
+		: FOR ctrlexp DO stmt {
+            SymTabEntry *symbol = lookup($2.iterName);
+            if (!symbol) {
+                printf("\n***Error: undeclared identifier %s\n", $2.iterName);
+            } else {
+                int newReg1 = NextRegister();
+                int newReg2 = NextRegister();
 
-            sprintf(CommentBuffer, "// Generate control code for \"FOR\"");
-            emitComment(CommentBuffer);
-            emit(newLbl1, LOADAI, 0, symbol->offset, newReg1);
-            emit(NOLABEL, CMPLE, newReg1, $2.upperBound.targetRegister, newReg2);
-            emit(NOLABEL, CBR, newReg2, newLbl2, newLbl3);
-            emit(newLbl2, NOP, EMPTY, EMPTY, EMPTY);
-
-            emit(newLbl3, NOP, EMPTY, EMPTY, EMPTY);
+                emit(NOLABEL, LOADAI, 0, symbol->offset, newReg1);
+                emit(NOLABEL, ADDI, newReg1, 1, newReg2);
+                emit(NOLABEL, STOREAI, newReg2, 0, symbol->offset);
+                emit(NOLABEL, BR, $2.bgnLbl, EMPTY, EMPTY);
+                emit($2.endLbl, NOP, EMPTY, EMPTY, EMPTY);
+            }
         }
 		ENDFOR
 		;
-
 	wstmt
-		: WHILE condexp DO stmt {
-
+		: {
+            $<jmp>$ = (jmpInfo) { NextLabel(), NextLabel(), NextLabel() };
+            emit($<jmp>$.label[0], NOP, EMPTY, EMPTY, EMPTY);
+            sprintf(CommentBuffer, "Control code for \"WHILE DO\"");
+            emitComment(CommentBuffer);
         }
+        WHILE condexp DO
+            {
+                if ($3.type != TYPE_BOOL) {
+                    printf("\n***Error: exp in while stmt must be boolean\n");
+                } else {
+                    emit(NOLABEL, CBR, $3.targetRegister, $<jmp>1.label[1], $<jmp>1.label[2]);
+                    emit($<jmp>1.label[1], NOP, EMPTY, EMPTY, EMPTY);
+                    sprintf(CommentBuffer, "Body of \"WHILE\" construct starts here");
+                    emitComment(CommentBuffer);
+                }
+            }
+            stmt
 		ENDWHILE
+        {
+            emit(NOLABEL, BR, $<jmp>1.label[0], EMPTY, EMPTY);
+            emit($<jmp>1.label[2], NOP, EMPTY, EMPTY, EMPTY);
+        }
 		;
-
-
 	astmt
 		: lhs ASG exp {
 			if (! ((($1.type == TYPE_INT) && ($3.type == TYPE_INT)) ||
 				   (($1.type == TYPE_BOOL) && ($3.type == TYPE_BOOL)))) {
-				printf("*** ERROR ***: Assignment types do not match.\n");
-			}
-			emit(NOLABEL,
-				 STORE,
-				 $3.targetRegister,
-				 $1.targetRegister,
-				 EMPTY);
+                printf("\n***Error: assignment types do not match\n");
+			} else {
+                emit(NOLABEL,
+                     STORE,
+                     $3.targetRegister,
+                     $1.targetRegister,
+                     EMPTY);
+            }
 		}
 		;
 
 	lhs
 		: ID {
 			SymTabEntry *symbol = lookup($1.str);
-			int newReg1 = NextRegister();
-            int newReg2 = NextRegister();
+            if (!symbol) {
+                printf("\n***Error: undeclared identifier %s\n", $1.str);
+            } else if (symbol->isArray) {
+                printf("\n***Error: assignment to whole array\n");
+            } else {
+                int newReg1 = NextRegister();
+                int newReg2 = NextRegister();
 
-			$$.targetRegister = newReg2;
-			$$.type = symbol->type;
+                $$.targetRegister = newReg2;
+                $$.type = symbol->type;
 
-            sprintf(CommentBuffer, "Compute address of variable \"%s\" at offset %d in register %d", symbol->name, symbol->offset, newReg2);
-            emitComment(CommentBuffer);
-			emit(NOLABEL, LOADI, symbol->offset, newReg1, EMPTY);
-			emit(NOLABEL, ADD, 0, newReg1, newReg2);
+                sprintf(CommentBuffer, "Compute address of variable \"%s\" at offset %d in register %d", symbol->name, symbol->offset, newReg2);
+                emitComment(CommentBuffer);
+                emit(NOLABEL, LOADI, symbol->offset, newReg1, EMPTY);
+                emit(NOLABEL, ADD, 0, newReg1, newReg2);
+            }
 		}
 		|  ID '[' exp ']' {
 			SymTabEntry *symbol = lookup($1.str);
-			int newReg1 = NextRegister();
-			int newReg2 = NextRegister();
-            int newReg3 = NextRegister();
-            int newReg4 = NextRegister();
-            int newReg5 = NextRegister();
+            if (!symbol) {
+                printf("\n***Error: undeclared identifier %s\n", $1.str);
+            } else if (!symbol->isArray) {
+                printf("\n***Error: id %s is not an array\n", $1.str);
+            } else if ($3.type != TYPE_INT) {
+                printf("\n***Error: subscript exp not type integer\n");
+            } else {
+                int newReg1 = NextRegister();
+                int newReg2 = NextRegister();
+                int newReg3 = NextRegister();
+                int newReg4 = NextRegister();
+                int newReg5 = NextRegister();
 
-			$$.targetRegister = newReg5;
-			$$.type = symbol->type;
+                $$.targetRegister = newReg1;
+                $$.type = symbol->type;
 
-            sprintf(CommentBuffer, "Compute address of array variable \"%s\" with base address %d", symbol->name, symbol->offset);
-            emitComment(CommentBuffer);
-			emit(NOLABEL, LOADI, 4, newReg1, EMPTY);
-			emit(NOLABEL, MULT, newReg1, $3.targetRegister, newReg2);
-            emit(NOLABEL, LOADI, symbol->offset, newReg3, EMPTY);
-            emit(NOLABEL, ADD, 0, newReg3, newReg4);
-			emit(NOLABEL, ADD, newReg2, newReg4, newReg5);
+                sprintf(CommentBuffer, "Compute address of array variable \"%s\" with base address %d", symbol->name, symbol->offset);
+                emitComment(CommentBuffer);
+                emit(NOLABEL, LOADI, 4, newReg2, EMPTY);
+                emit(NOLABEL, MULT, $3.targetRegister, newReg2, newReg3);
+                emit(NOLABEL, LOADI, symbol->offset, newReg4, EMPTY);
+                emit(NOLABEL, ADD, newReg4, newReg3, newReg5);
+                emit(NOLABEL, ADD, 0, newReg5, newReg1);
+            }
 		}
 		;
 
 
 	exp
 		: exp '+' exp {
-			int newReg = NextRegister();
+            if (! (($1.type == TYPE_INT) && ($3.type == TYPE_INT))) {
+                printf("\n***Error: types of operands for operation + do not match\n");
+                $$.type = TYPE_ERROR;
+			} else {
+                int newReg = NextRegister();
 
-			if (! (($1.type == TYPE_INT) && ($3.type == TYPE_INT))) {
-				printf("*** ERROR ***: Operator types must be integer.\n");
-			}
-			$$.type = TYPE_INT;
+                $$.targetRegister = newReg;
+                $$.type = TYPE_INT;
 
-			$$.targetRegister = newReg;
-			emit(NOLABEL,
-				 ADD,
-				 $1.targetRegister,
-				 $3.targetRegister,
-				 newReg);
+                emit(NOLABEL,
+                     ADD,
+                     $1.targetRegister,
+                     $3.targetRegister,
+                     newReg);
+            }
 		}
 		| exp '-' exp {
-			int newReg = NextRegister();
-
 			if (! (($1.type == TYPE_INT) && ($3.type == TYPE_INT))) {
-				printf("*** ERROR ***: Operator types must be integer.\n");
-			}
-			$$.type = TYPE_INT;
-
-			$$.targetRegister = newReg;
-			emit(NOLABEL,
-				 SUB,
-				 $1.targetRegister,
-				 $3.targetRegister,
-				 newReg);
+                printf("\n***Error: types of operands for operation - do not match\n");
+                $$.type = TYPE_ERROR;
+			} else {
+                int newReg = NextRegister();
+                
+                $$.targetRegister = newReg;
+                $$.type = TYPE_INT;
+                
+                emit(NOLABEL,
+                     SUB,
+                     $1.targetRegister,
+                     $3.targetRegister,
+                     newReg);
+            }
         }
 		| exp '*' exp {
-			int newReg = NextRegister();
-
 			if (! (($1.type == TYPE_INT) && ($3.type == TYPE_INT))) {
-				printf("*** ERROR ***: Operator types must be integer.\n");
-			}
-			$$.type = TYPE_INT;
-
-			$$.targetRegister = newReg;
-			emit(NOLABEL,
-				 MULT,
-				 $1.targetRegister,
-				 $3.targetRegister,
-				 newReg);
+                printf("\n***Error: types of operands for operation * do not match\n");
+                $$.type = TYPE_ERROR;
+			} else {
+                int newReg = NextRegister();
+                
+                $$.targetRegister = newReg;
+                $$.type = TYPE_INT;
+                
+                emit(NOLABEL,
+                     MULT,
+                     $1.targetRegister,
+                     $3.targetRegister,
+                     newReg);
+            }
         }
 		| exp AND exp {
-			int newReg = NextRegister();
-
 			if (! (($1.type == TYPE_BOOL) && ($3.type == TYPE_BOOL))) {
-				printf("*** ERROR ***: Operator types must be integer.\n");
-			}
-			$$.type = TYPE_BOOL;
-
-			$$.targetRegister = newReg;
-			emit(NOLABEL,
-                 AND_INSTR,
-				 $1.targetRegister,
-				 $3.targetRegister,
-				 newReg);
+                printf("\n***Error: types of operands for operation AND do not match\n");
+                $$.type = TYPE_ERROR;
+			} else {
+                int newReg = NextRegister();
+                
+                $$.targetRegister = newReg;
+                $$.type = TYPE_BOOL;
+                
+                emit(NOLABEL,
+                     AND_INSTR,
+                     $1.targetRegister,
+                     $3.targetRegister,
+                     newReg);
+            }
         }
 		| exp OR exp {
-			int newReg = NextRegister();
-
 			if (! (($1.type == TYPE_BOOL) && ($3.type == TYPE_BOOL))) {
-				printf("*** ERROR ***: Operator types must be integer.\n");
-			}
-			$$.type = TYPE_BOOL;
-
-			$$.targetRegister = newReg;
-			emit(NOLABEL,
-                 OR_INSTR,
-				 $1.targetRegister,
-				 $3.targetRegister,
-				 newReg);
+                printf("\n***Error: types of operands for operation OR do not match\n");
+                $$.type = TYPE_ERROR;
+			} else {
+                int newReg = NextRegister();
+                
+                $$.targetRegister = newReg;
+                $$.type = TYPE_BOOL;
+                
+                emit(NOLABEL,
+                     OR_INSTR,
+                     $1.targetRegister,
+                     $3.targetRegister,
+                     newReg);
+            }
         }
 
 		| ID {
 			SymTabEntry *symbol = lookup($1.str);
-			int newReg = NextRegister();
+            if (!symbol) {
+                printf("\n***Error: undeclared identifier %s\n", $1.str);
+                $$.type = TYPE_ERROR;
+            } else {
+                int newReg = NextRegister();
 
-			$$.targetRegister = newReg;
-			$$.type = symbol->type;
+                $$.targetRegister = newReg;
+                $$.type = symbol->type;
 
-            sprintf(CommentBuffer, "Load RHS value of variable \"%s\" at offset %d", symbol->name, symbol->offset);
-            emitComment(CommentBuffer);
-			emit(NOLABEL, LOADAI, 0, symbol->offset, newReg);
+                sprintf(CommentBuffer, "Load RHS value of variable \"%s\" at offset %d", symbol->name, symbol->offset);
+                emitComment(CommentBuffer);
+                emit(NOLABEL, LOADAI, 0, symbol->offset, newReg);
+            }
 		}
 		| ID '[' exp ']' {
 			SymTabEntry *symbol = lookup($1.str);
-			int newReg1 = NextRegister();
-			int newReg2 = NextRegister();
-            int newReg3 = NextRegister();
-            int newReg4 = NextRegister();
-            int newReg5 = NextRegister();
-            int newReg6 = NextRegister();
+            if (!symbol) {
+                printf("\n***Error: undeclared identifier %s\n", $1.str);
+            } else {
+                int newReg1 = NextRegister();
+                int newReg2 = NextRegister();
+                int newReg3 = NextRegister();
+                int newReg4 = NextRegister();
+                int newReg5 = NextRegister();
 
-            $$.targetRegister = newReg6;
-            $$.type = symbol->type;
+                $$.targetRegister = newReg1;
+                $$.type = symbol->type;
 
-            sprintf(CommentBuffer, "Load RHS value of array variable \"%s\" with base address %d", symbol->name, symbol->offset);
-            emitComment(CommentBuffer);
-            emit(NOLABEL, LOADI, 4, newReg1, EMPTY);
-            emit(NOLABEL, MULT, newReg1, $3.targetRegister, newReg2);
-            emit(NOLABEL, LOADI, symbol->offset, newReg3, EMPTY);
-            emit(NOLABEL, ADD, 0, newReg3, newReg4);
-            emit(NOLABEL, ADD, newReg2, newReg4, newReg5);
-            emit(NOLABEL, LOAD, newReg5, newReg6, EMPTY);
+                sprintf(CommentBuffer, "Load RHS value of array variable \"%s\" with base address %d", symbol->name, symbol->offset);
+                emitComment(CommentBuffer);
+                emit(NOLABEL, LOADI, 4, newReg2, EMPTY);
+                emit(NOLABEL, MULT, $3.targetRegister, newReg2, newReg3);
+                emit(NOLABEL, LOADI, symbol->offset, newReg4, EMPTY);
+                emit(NOLABEL, ADD, newReg4, newReg3, newReg5);
+                emit(NOLABEL, LOADAO, 0, newReg5, newReg1);
+            }
 		}
 
 		| ICONST {
@@ -378,85 +451,135 @@
 	ctrlexp
 		: ID ASG ICONST ',' ICONST {
             SymTabEntry *symbol = lookup($1.str);
-            int newReg1 = NextRegister();
-            int newReg2 = NextRegister();
-            int newReg3 = NextRegister();
-            int newReg4 = NextRegister();
+            if ($3.num > $5.num) {
+                printf("\n***Error: lower bound exceeds upper bound\n");
+            } else if (!symbol) {
+                printf("\n***Error: undeclared identifier %s\n", $1.str);
+            } else if (symbol->type != TYPE_INT) {
+                printf("\n***Error: induction variable not scalar integer variable\n");
+            } else {
+                int newLbl1 = NextLabel();
+                int newLbl2 = NextLabel();
+                int newLbl3 = NextLabel();
+                int newReg1 = NextRegister();
+                int newReg2 = NextRegister();
+                int newReg3 = NextRegister();
+                int newReg4 = NextRegister();
+                int newReg5 = NextRegister();
+                int newReg6 = NextRegister();
 
-            $$.varName = $1.str;
-            $$.upperBound.targetRegister = newReg4;
-            $$.upperBound.type = TYPE_INT;
+                $$.iterName = $1.str;
+                $$.bgnLbl = newLbl1;
+                $$.endLbl = newLbl3;
 
-            sprintf(CommentBuffer, "Initialize ind. variable \"%s\" at offset %d with lower bound value %d", symbol->name, symbol->offset, $3.num);
-            emitComment(CommentBuffer);
-            emit(NOLABEL, LOADI, symbol->offset, newReg1, EMPTY);
-            emit(NOLABEL, ADD, 0, newReg1, newReg2);
-            emit(NOLABEL, LOADI, $3.num, newReg3, EMPTY);
-            emit(NOLABEL, LOADI, $5.num, newReg4, EMPTY);
-            emit(NOLABEL, STORE, newReg3, newReg2, EMPTY);
+                sprintf(CommentBuffer, "Initialize ind. variable \"%s\" at offset %d with lower bound value %d", symbol->name, symbol->offset, $3.num);
+                emitComment(CommentBuffer);
+                emit(NOLABEL, LOADI, symbol->offset, newReg1, EMPTY);
+                emit(NOLABEL, ADD, 0, newReg1, newReg2);
+                emit(NOLABEL, LOADI, $3.num, newReg5, EMPTY);
+                emit(NOLABEL, LOADI, $5.num, newReg6, EMPTY);
+                emit(NOLABEL, STORE, newReg5, newReg2, EMPTY);
+
+                sprintf(CommentBuffer, "Generate control code for \"FOR\"");
+                emitComment(CommentBuffer);
+                emit(newLbl1, LOADAI, 0, symbol->offset, newReg3);
+                emit(NOLABEL, CMPLE, newReg3, newReg6, newReg4);
+                emit(NOLABEL, CBR, newReg4, newLbl2, newLbl3);
+                emit(newLbl2, NOP, EMPTY, EMPTY, EMPTY);
+            }
         }
 		;
 
 	condexp
 		: exp NEQ exp {
-			int newReg = NextRegister();
-			$$.type = TYPE_BOOL;
-			$$.targetRegister = newReg;
-			emit(NOLABEL,
-                 CMPNE,
-				 $1.targetRegister,
-				 $3.targetRegister,
-				 newReg);
+            if ($1.type != $3.type) {
+                printf("\n***Error: types of operands for operation NEQ do not match\n");
+                $$.type = TYPE_ERROR;
+            } else {
+                int newReg = NextRegister();
+                $$.type = TYPE_BOOL;
+                $$.targetRegister = newReg;
+                emit(NOLABEL,
+                     CMPNE,
+                     $1.targetRegister,
+                     $3.targetRegister,
+                     newReg);
+            }
         }
 		| exp EQ exp {
-			int newReg = NextRegister();
-			$$.type = TYPE_BOOL;
-			$$.targetRegister = newReg;
-			emit(NOLABEL,
-                 CMPEQ,
-				 $1.targetRegister,
-				 $3.targetRegister,
-				 newReg);
+            if ($1.type != $3.type) {
+                printf("\n***Error: types of operands for operation EQ do not match\n");
+                $$.type = TYPE_ERROR;
+            } else {
+				int newReg = NextRegister();
+				$$.type = TYPE_BOOL;
+				$$.targetRegister = newReg;
+				emit(NOLABEL,
+					 CMPEQ,
+					 $1.targetRegister,
+					 $3.targetRegister,
+					 newReg);
+			}
         }
 		| exp LT exp {
-			int newReg = NextRegister();
-			$$.type = TYPE_BOOL;
-			$$.targetRegister = newReg;
-			emit(NOLABEL,
-                 CMPLT,
-				 $1.targetRegister,
-				 $3.targetRegister,
-				 newReg);
+            if (! (($1.type == TYPE_INT) && ($3.type == TYPE_INT))) {
+                printf("\n***Error: types of operands for operation EQ do not match\n");
+                $$.type = TYPE_ERROR;
+            } else {
+				int newReg = NextRegister();
+				$$.type = TYPE_BOOL;
+				$$.targetRegister = newReg;
+				emit(NOLABEL,
+					 CMPLT,
+					 $1.targetRegister,
+					 $3.targetRegister,
+					 newReg);
+			}
         }
 		| exp LEQ exp {
-			int newReg = NextRegister();
-			$$.type = TYPE_BOOL;
-			$$.targetRegister = newReg;
-			emit(NOLABEL,
-                 CMPLE,
-				 $1.targetRegister,
-				 $3.targetRegister,
-				 newReg);
+            if (! (($1.type == TYPE_INT) && ($3.type == TYPE_INT))) {
+                printf("\n***Error: types of operands for operation EQ do not match\n");
+                $$.type = TYPE_ERROR;
+            } else {
+				int newReg = NextRegister();
+				$$.type = TYPE_BOOL;
+				$$.targetRegister = newReg;
+				emit(NOLABEL,
+					 CMPLE,
+					 $1.targetRegister,
+					 $3.targetRegister,
+					 newReg);
+			}
         }
 		| exp GT exp {
-			int newReg = NextRegister();
-			$$.type = TYPE_BOOL;
-			$$.targetRegister = newReg;
-			emit(NOLABEL,
-                 CMPGT,
-				 $1.targetRegister,
-				 $3.targetRegister,
-				 newReg);
+            if (! (($1.type == TYPE_INT) && ($3.type == TYPE_INT))) {
+                printf("\n***Error: types of operands for operation EQ do not match\n");
+                $$.type = TYPE_ERROR;
+            } else {
+				int newReg = NextRegister();
+				$$.type = TYPE_BOOL;
+				$$.targetRegister = newReg;
+				emit(NOLABEL,
+					 CMPGT,
+					 $1.targetRegister,
+					 $3.targetRegister,
+					 newReg);
+			}
         }
 		| exp GEQ exp {
-			int newReg = NextRegister();
-			$$.type = TYPE_BOOL;
-			$$.targetRegister = newReg;
-			emit(NOLABEL,
-                 CMPGE,
-				 $1.targetRegister,
-				 $3.targetRegister,
-				 newReg);
+            if (! (($1.type == TYPE_INT) && ($3.type == TYPE_INT))) {
+                printf("\n***Error: types of operands for operation EQ do not match\n");
+                $$.type = TYPE_ERROR;
+            } else {
+				int newReg = NextRegister();
+				$$.type = TYPE_BOOL;
+				$$.targetRegister = newReg;
+				emit(NOLABEL,
+					 CMPGE,
+					 $1.targetRegister,
+					 $3.targetRegister,
+					 newReg);
+			}
         }
 		| error { yyerror("***Error: illegal conditional expression\n"); }
 		;
@@ -472,7 +595,7 @@ int main(int argc, char * argv[]) {
 
     outfile = fopen("iloc.out", "w");
     if (outfile == NULL) {
-        printf("ERROR: Cannot open output file \"iloc.out\".\n");
+        printf("ERROR: Cannot open output file \"iloc.out\"\n");
         return -1;
     }
 

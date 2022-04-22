@@ -25,12 +25,20 @@ struct idInfo {
 typedef struct {
     Type_Expression type;
     int size;
+    int isArray;
 } datatype;
 
 typedef struct {
-    char *varName;
-    regInfo *upperBound;
+    char *iterName;
+    int bgnLbl;
+    int endLbl;
 } ctrlExpInfo;
+
+typedef struct {
+    int label[3];
+} jmpInfo;
+
+
 
 #endif
 

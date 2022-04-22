@@ -56,7 +56,7 @@ lookup(char *name) {
 
 
 void
-insert(char *name, Type_Expression type, int offset, int size) {
+insert(char *name, Type_Expression type, int offset, int size, int isArray) {
     int currentIndex;
     int visitedSlots = 0;
 
@@ -77,7 +77,8 @@ insert(char *name, Type_Expression type, int offset, int size) {
     strcpy(HashTable[currentIndex]->name, name);
     HashTable[currentIndex]->type = type; /* type expression */
     HashTable[currentIndex]->offset = offset; /* in bytes */
-    HashTable[currentIndex]->size = size; /* number of entries */
+    HashTable[currentIndex]->size = size;
+    HashTable[currentIndex]->isArray = isArray;
 }
 
 static
@@ -107,8 +108,13 @@ PrintSymbolTable() {
     printf("\n --- Symbol Table ---------------\n\n");
     for (i = 0; i < HASH_TABLE_SIZE; i++) {
         if (HashTable[i] != NULL) {
-            printf("\t \"%s\" of type %s with offset %d\n",
-                   HashTable[i]->name, TypeToString(HashTable[i]->type), HashTable[i]->offset);
+            if (HashTable[i]->isArray) {
+                printf("\t1-DIM ARRAY \"%s\" of element type %s with offset %d\n",
+                       HashTable[i]->name, TypeToString(HashTable[i]->type), HashTable[i]->offset);
+            } else {
+                printf("\tSCALAR \"%s\" of type %s with offset %d\n",
+                       HashTable[i]->name, TypeToString(HashTable[i]->type), HashTable[i]->offset);
+            }
         }
     }
     printf("\n --------------------------------\n\n");
